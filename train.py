@@ -64,7 +64,7 @@ class LabelSmoothingLoss(nn.Module):
         self.confidence = 1.0 - smoothing
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        log_probs = nn.functional.log_softmax(logits, dim=-1)
+        log_probs = nn.functional.log_softmax(logits.float(), dim=-1)
         with torch.no_grad():
             true_dist = torch.zeros_like(log_probs)
             true_dist.fill_(self.smoothing / (self.vocab_size - 1))
@@ -286,7 +286,7 @@ def train(
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.98), eps=1e-9)
     scheduler = NoamScheduler(optimizer, d_model, warmup_steps)
     criterion = LabelSmoothingLoss(vocab_size, pad_id, label_smoothing)
-    scaler = GradScaler() if (use_amp and device.type == "cuda") else None
+    scaler = torch.amp.GradScaler('cuda') if (use_amp and device.type == "cuda") else None
 
     start_epoch = 0
     best_bleu = 0.0
