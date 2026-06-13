@@ -166,6 +166,7 @@ def validate(
 ) -> Dict[str, float]:
     """Validate the model and compute BLEU."""
     model.eval()
+    actual_model = model.module if isinstance(model, torch.nn.DataParallel) else model
     total_loss = 0.0
     total_tokens = 0
     references = []
@@ -201,8 +202,8 @@ def validate(
                     ref_text = tokenizer.decode(ref_ids)
                     references.append(ref_text)
 
-                    hyp_ids = model.greedy_decode(
-                        src[i:i+1], src_mask[i:i+1], model.max_len, bos_id, eos_id
+                    hyp_ids = actual_model.greedy_decode(
+                        src[i:i+1], src_mask[i:i+1], actual_model.max_len, bos_id, eos_id
                     )
                     hyp_ids = hyp_ids[0].tolist()
                     hyp_ids = [t for t in hyp_ids if t not in {bos_id, eos_id, pad_id}]
