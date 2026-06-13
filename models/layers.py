@@ -105,7 +105,7 @@ class MultiHeadAttention(nn.Module):
 
         if mask is not None:
             # mask shape: (B, 1, q_len, k_len) or broadcastable
-            scores = scores.masked_fill(mask, float("-inf"))
+            scores = scores.masked_fill(mask, -1e9)
 
         attn = F.softmax(scores, dim=-1)
         attn = self.dropout(attn)
