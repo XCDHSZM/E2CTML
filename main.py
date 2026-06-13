@@ -78,9 +78,7 @@ def cmd_train_tokenizer(args):
 
     train_en = args.train_en or TRAIN_EN
     train_zh = args.train_zh or TRAIN_ZH
-    model_prefix = os.path.join(
-        os.path.dirname(TOKENIZER_MODEL) or BASE_DIR, "tokenizer_data", "spm_model"
-    )
+    model_prefix = os.path.join(BASE_DIR, "tokenizer_data", "spm_model")
 
     tokenizer = Tokenizer()
     tokenizer.train(
@@ -295,7 +293,7 @@ def main():
 
     # Tokenizer
     parser.add_argument("--vocab_size", type=int, default=16000, help="Vocabulary size")
-    parser.add_argument("--char_coverage", type=float, default=0.9995, help="Character coverage")
+    parser.add_argument("--char_coverage", type=float, default=0.9999, help="Character coverage")
     parser.add_argument("--tokenizer_type", type=str, default="bpe", choices=["bpe", "unigram"])
     parser.add_argument("--num_threads", type=int, default=8, help="Tokenizer training threads")
 
