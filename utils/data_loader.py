@@ -100,12 +100,15 @@ def collate_fn(batch: List[dict], pad_id: int) -> dict:
     tgt_padding_mask = (tgt_padded == pad_id).unsqueeze(1).unsqueeze(2)
 
     T = tgt_padded.size(1)
-    # causal_mask: (1, T, T) — upper triangular True
+    # causal_mask: (1, T, T) — upper triangular True (mask future tokens)
     causal_mask = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
 
-    # Combine: (B, 1, T, T) — True where masked
-    # causal_mask (1, T, T) | tgt_padding_mask expanded to (B, 1, T, T)
-    tgt_mask = causal_mask.unsqueeze(0).unsqueeze(0) | tgt_padding_mask.transpose(-1, -2).expand(-1, -1, T, -1)
+    # key_padding_mask: (B, 1, 1, T) → (B, 1, T, 1) → broadcast with causal → (B, 1, T, T)
+    # Only mask PAD keys, not PAD queries. PAD query positions are ignored in loss anyway.
+    key_pad_mask = tgt_padding_mask.transpose(-1, -2)  # (B, 1, T, 1)
+
+    # Combine: True where masked (don't attend)
+    tgt_mask = causal_mask.unsqueeze(0).unsqueeze(0) | key_pad_mask
 
     return {
         "src": src_padded,

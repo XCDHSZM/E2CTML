@@ -179,13 +179,6 @@ class DecoderLayer(nn.Module):
     ) -> torch.Tensor:
         # Masked self-attention
         self_attn_out = self.self_attn(x, x, x, self_mask)
-        if torch.isnan(self_attn_out).any():
-            print(f"  [DEBUG] Decoder self-attn NaN! x shape={x.shape}, mask shape={self_mask.shape if self_mask is not None else None}")
-            # Check mask: any row that's all True?
-            if self_mask is not None:
-                all_masked = self_mask.all(dim=-1)  # (B, 1, T) — rows where all k are masked
-                if all_masked.any():
-                    print(f"  [DEBUG] Rows with all k masked: {all_masked.sum().item()}")
         x = self.norm1(x + self.dropout1(self_attn_out))
         # Cross-attention to encoder output
         cross_out = self.cross_attn(x, memory, memory, memory_mask)

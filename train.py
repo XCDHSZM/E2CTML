@@ -112,16 +112,10 @@ def train_epoch(
         if use_amp and device.type == "cuda":
             with torch.amp.autocast("cuda"):
                 logits = model(src, tgt_input, src_mask, tgt_mask, src_mask)
-                # Debug: check for NaN in logits
-                if batch_idx == 0:
-                    print(f"  [DEBUG] logits shape={logits.shape}, has_nan={torch.isnan(logits).any().item()}, "
-                          f"min={logits.min().item():.4f}, max={logits.max().item():.4f}")
                 loss = criterion(
                     logits.contiguous().view(-1, logits.size(-1)),
                     tgt_output.contiguous().view(-1),
                 )
-            if batch_idx == 0:
-                print(f"  [DEBUG] loss={loss.item():.6f}, has_nan={torch.isnan(loss).any().item()}")
             scaler.scale(loss).backward()
             scaler.unscale_(scheduler.optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)

@@ -92,15 +92,8 @@ class Decoder(nn.Module):
         """
         x = self.embedding(tgt) * self.scale
         x = self.pos_encoding(x)
-        if torch.isnan(x).any():
-            print(f"  [DEBUG] Decoder embedding/pos_encoding NaN!")
-        for i, layer in enumerate(self.layers):
+        for layer in self.layers:
             x = layer(x, memory, self_mask, memory_mask)
-            if torch.isnan(x).any():
-                print(f"  [DEBUG] Decoder layer {i} NaN! "
-                      f"self_mask shape={self_mask.shape if self_mask is not None else None}, "
-                      f"x min/max={x[~torch.isnan(x)].min().item():.4f}/{x[~torch.isnan(x)].max().item():.4f}")
-                break
         return x
 
 
@@ -181,15 +174,8 @@ class Transformer(nn.Module):
             logits: (B, T, vocab_size)
         """
         memory = self.encoder(src, src_mask)
-        if torch.isnan(memory).any():
-            print(f"  [DEBUG] Encoder output has NaN! src shape={src.shape}, src_mask shape={src_mask.shape}")
-            print(f"  [DEBUG] src sample: {src[0,:20]}")
         output = self.decoder(tgt, memory, tgt_mask, memory_mask)
-        if torch.isnan(output).any():
-            print(f"  [DEBUG] Decoder output has NaN! tgt shape={tgt.shape}")
         logits = self.generator(output)
-        if torch.isnan(logits).any():
-            print(f"  [DEBUG] Generator output has NaN!")
         return logits
 
     def encode(self, src: torch.Tensor, src_mask: torch.Tensor = None) -> torch.Tensor:
