@@ -4,6 +4,7 @@ Supports multi-GPU training (DataParallel), mixed precision, Noam scheduler.
 """
 
 import os
+import time
 import math
 import torch
 import torch.nn as nn
@@ -13,7 +14,7 @@ from typing import Dict, Optional
 
 from models.transformer import Transformer
 from utils.data_loader import TranslationDataset, create_dataloader
-from evaluation import compute_bleu, translate_sentence
+from evaluation import compute_bleu
 
 
 class NoamScheduler:
@@ -86,13 +87,13 @@ def train_epoch(
     pad_id: int,
     use_amp: bool = True,
     clip_grad: float = 1.0,
+    log_interval: int = 100,
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     total_tokens = 0
-    total_batches = len(dataloader)
-    log_every = max(1, total_batches // 20)  # ~5% intervals
+    start_time = time.time()
 
     for batch_idx, batch in enumerate(dataloader):
         src = batch["src"].to(device)
@@ -136,18 +137,19 @@ def train_epoch(
         total_loss += loss.item() * n_tokens
         total_tokens += n_tokens
 
-        # Print progress every ~5%
-        if (batch_idx + 1) % log_every == 0:
+        if batch_idx % log_interval == 0 and batch_idx > 0:
+            elapsed = time.time() - start_time
             current_loss = total_loss / total_tokens
             ppl = math.exp(min(current_loss, 10))
             lr = scheduler.get_lr()
-            pct = 100 * (batch_idx + 1) / total_batches
-            print(f"  Train [{pct:3.0f}%] Step {batch_idx+1}/{total_batches} | "
-                  f"loss={current_loss:.3f} ppl={ppl:.1f} lr={lr:.2e}")
+            print(f"  Step {batch_idx:6d}/{len(dataloader):6d} | "
+                  f"Loss: {current_loss:.4f} | PPL: {ppl:.2f} | "
+                  f"LR: {lr:.6f} | {elapsed:.0f}s")
 
     avg_loss = total_loss / total_tokens
     ppl = math.exp(min(avg_loss, 10))
-    print(f"Epoch complete → Loss: {avg_loss:.4f} | PPL: {ppl:.2f}")
+    elapsed = time.time() - start_time
+    print(f"Epoch complete | Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | Time: {elapsed:.0f}s")
     return {"loss": avg_loss, "ppl": ppl}
 
 
@@ -211,7 +213,7 @@ def validate(
     ppl = math.exp(min(avg_loss, 10))
     bleu = compute_bleu(references, hypotheses) if (references and hypotheses) else 0.0
 
-    print(f"Validation → Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | BLEU: {bleu:.2f}")
+    print(f"Validation | Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | BLEU: {bleu:.2f}")
     return {"loss": avg_loss, "ppl": ppl, "bleu": bleu}
 
 
@@ -239,6 +241,7 @@ def train(
     clip_grad = config.get("clip_grad", 1.0)
     use_amp = config.get("use_amp", True)
     num_workers = config.get("num_workers", 4)
+    log_interval = config.get("log_interval", 100)
     save_dir = config.get("save_dir", "checkpoints")
     patience = config.get("patience", 10)
 
@@ -313,7 +316,7 @@ def train(
 
         train_metrics = train_epoch(
             model, train_loader, criterion, scheduler, scaler,
-            device, pad_id, use_amp, clip_grad,
+            device, pad_id, use_amp, clip_grad, log_interval,
         )
 
         dev_metrics = validate(
