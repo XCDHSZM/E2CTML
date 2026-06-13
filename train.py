@@ -4,8 +4,6 @@ Supports multi-GPU training (DataParallel), mixed precision, Noam scheduler.
 """
 
 import os
-import sys
-import time
 import math
 import torch
 import torch.nn as nn
@@ -13,7 +11,6 @@ import torch.optim as optim
 from torch.cuda.amp import GradScaler
 from typing import Dict, Optional
 
-from tqdm import tqdm
 from models.transformer import Transformer
 from utils.data_loader import TranslationDataset, create_dataloader
 from evaluation import compute_bleu, translate_sentence
@@ -94,9 +91,10 @@ def train_epoch(
     model.train()
     total_loss = 0.0
     total_tokens = 0
+    total_batches = len(dataloader)
+    log_every = max(1, total_batches // 20)  # ~5% intervals
 
-    pbar = tqdm(dataloader, desc="Training", unit="batch", ncols=100, file=sys.stdout, leave=False)
-    for batch in pbar:
+    for batch_idx, batch in enumerate(dataloader):
         src = batch["src"].to(device)
         tgt = batch["tgt"].to(device)
         src_mask = batch["src_mask"].to(device)
@@ -138,15 +136,14 @@ def train_epoch(
         total_loss += loss.item() * n_tokens
         total_tokens += n_tokens
 
-        # Update progress bar
-        current_loss = total_loss / total_tokens
-        ppl = math.exp(min(current_loss, 10))
-        lr = scheduler.get_lr()
-        pbar.set_postfix({
-            "loss": f"{current_loss:.3f}",
-            "ppl": f"{ppl:.1f}",
-            "lr": f"{lr:.2e}",
-        })
+        # Print progress every ~5%
+        if (batch_idx + 1) % log_every == 0:
+            current_loss = total_loss / total_tokens
+            ppl = math.exp(min(current_loss, 10))
+            lr = scheduler.get_lr()
+            pct = 100 * (batch_idx + 1) / total_batches
+            print(f"  Train [{pct:3.0f}%] Step {batch_idx+1}/{total_batches} | "
+                  f"loss={current_loss:.3f} ppl={ppl:.1f} lr={lr:.2e}")
 
     avg_loss = total_loss / total_tokens
     ppl = math.exp(min(avg_loss, 10))
@@ -172,9 +169,8 @@ def validate(
     references = []
     hypotheses = []
 
-    pbar = tqdm(dataloader, desc="Validating", unit="batch", ncols=100, file=sys.stdout, leave=False)
     with torch.no_grad():
-        for batch in pbar:
+        for batch_idx, batch in enumerate(dataloader):
             src = batch["src"].to(device)
             tgt = batch["tgt"].to(device)
             src_mask = batch["src_mask"].to(device)
@@ -193,8 +189,6 @@ def validate(
             n_tokens = (tgt_output != pad_id).sum().item()
             total_loss += loss.item() * n_tokens
             total_tokens += n_tokens
-
-            pbar.set_postfix({"loss": f"{total_loss/max(total_tokens,1):.3f}"})
 
             if len(references) < max_samples:
                 for i in range(src.size(0)):
@@ -312,9 +306,10 @@ def train(
     print(f"Batch={batch_size}, Epochs={epochs}, Warmup={warmup_steps}, Patience={patience}")
     print("=" * 60)
 
-    epochs_pbar = tqdm(range(start_epoch, epochs), desc="Epochs", unit="epoch", initial=start_epoch, total=epochs, ncols=100, file=sys.stdout)
-    for epoch in epochs_pbar:
-        epochs_pbar.set_description(f"Epoch {epoch+1}/{epochs}")
+    for epoch in range(start_epoch, epochs):
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch+1}/{epochs}")
+        print(f"{'='*60}")
 
         train_metrics = train_epoch(
             model, train_loader, criterion, scheduler, scaler,
@@ -339,6 +334,7 @@ def train(
                 "best_bleu": best_bleu, "config": config,
             }
             torch.save(checkpoint, os.path.join(save_dir, "best_model.pt"))
+            print(f"  ✓ Saved best model (BLEU: {best_bleu:.2f})")
         else:
             epochs_no_improve += 1
 
@@ -348,11 +344,7 @@ def train(
             "scheduler_state": scheduler.state_dict(), "best_bleu": best_bleu,
         }, os.path.join(save_dir, "latest_checkpoint.pt"))
 
-        epochs_pbar.set_postfix({
-            "train_loss": f"{train_metrics['loss']:.3f}",
-            "dev_bleu": f"{dev_metrics['bleu']:.2f}",
-            "best_bleu": f"{best_bleu:.2f}",
-        })
+        print(f"  Train Loss: {train_metrics['loss']:.4f} | Dev BLEU: {dev_metrics['bleu']:.2f} | Best BLEU: {best_bleu:.2f}")
 
         if epochs_no_improve >= patience:
             print(f"\nEarly stopping after {patience} epochs without improvement.")
