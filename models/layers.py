@@ -105,7 +105,8 @@ class MultiHeadAttention(nn.Module):
 
         if mask is not None:
             # mask shape: (B, 1, q_len, k_len) or broadcastable
-            scores = scores.masked_fill(mask, -1e9)
+            min_val = torch.finfo(scores.dtype).min
+            scores = scores.masked_fill(mask, min_val)
 
         attn = F.softmax(scores, dim=-1)
         attn = self.dropout(attn)
