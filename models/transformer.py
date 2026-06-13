@@ -92,8 +92,15 @@ class Decoder(nn.Module):
         """
         x = self.embedding(tgt) * self.scale
         x = self.pos_encoding(x)
-        for layer in self.layers:
+        if torch.isnan(x).any():
+            print(f"  [DEBUG] Decoder embedding/pos_encoding NaN!")
+        for i, layer in enumerate(self.layers):
             x = layer(x, memory, self_mask, memory_mask)
+            if torch.isnan(x).any():
+                print(f"  [DEBUG] Decoder layer {i} NaN! "
+                      f"self_mask shape={self_mask.shape if self_mask is not None else None}, "
+                      f"x min/max={x[~torch.isnan(x)].min().item():.4f}/{x[~torch.isnan(x)].max().item():.4f}")
+                break
         return x
 
 
