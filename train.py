@@ -112,20 +112,20 @@ def train_epoch(
         tgt = batch["tgt"].to(device)
         src_mask = batch["src_mask"].to(device)
         tgt_mask = batch["tgt_mask"].to(device)
-        mem_mask = batch["memory_mask"].to(device)
 
         # Prepare decoder input and output
-        tgt_input = tgt[:, :-1]  # Remove last token (teacher forcing input)
-        tgt_output = tgt[:, 1:]  # Remove first token (BOS)
+        tgt_input = tgt[:, :-1]
+        tgt_output = tgt[:, 1:]
 
-        # Adjust mask sizes
-        tgt_mask = tgt_mask[:, :tgt_input.size(1), :tgt_input.size(1)]
+        # Adjust tgt_mask for truncated decoder input
+        T = tgt_input.size(1)
+        tgt_mask = tgt_mask[:, :, :T, :T]
 
         scheduler.zero_grad()
 
         if use_amp:
-            with autocast():
-                logits = model(src, tgt_input, src_mask, tgt_mask, mem_mask)
+            with torch.amp.autocast("cuda" if device.type == "cuda" else "cpu"):
+                logits = model(src, tgt_input, src_mask, tgt_mask, src_mask)
                 loss = criterion(
                     logits.contiguous().view(-1, logits.size(-1)),
                     tgt_output.contiguous().view(-1),
@@ -136,7 +136,7 @@ def train_epoch(
             scaler.step(scheduler.optimizer)
             scaler.update()
         else:
-            logits = model(src, tgt_input, src_mask, tgt_mask, mem_mask)
+            logits = model(src, tgt_input, src_mask, tgt_mask, src_mask)
             loss = criterion(
                 logits.contiguous().view(-1, logits.size(-1)),
                 tgt_output.contiguous().view(-1),
@@ -195,14 +195,14 @@ def validate(
             tgt = batch["tgt"].to(device)
             src_mask = batch["src_mask"].to(device)
             tgt_mask = batch["tgt_mask"].to(device)
-            mem_mask = batch["memory_mask"].to(device)
 
             tgt_input = tgt[:, :-1]
             tgt_output = tgt[:, 1:]
-            tgt_mask_adj = tgt_mask[:, :tgt_input.size(1), :tgt_input.size(1)]
+            T = tgt_input.size(1)
+            tgt_mask_adj = tgt_mask[:, :, :T, :T]
 
             # Compute loss
-            logits = model(src, tgt_input, src_mask, tgt_mask_adj, mem_mask)
+            logits = model(src, tgt_input, src_mask, tgt_mask_adj, src_mask)
             loss = criterion(
                 logits.contiguous().view(-1, logits.size(-1)),
                 tgt_output.contiguous().view(-1),

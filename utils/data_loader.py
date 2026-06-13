@@ -7,7 +7,6 @@ import os
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple
-import numpy as np
 
 
 class TranslationDataset(Dataset):
@@ -23,28 +22,17 @@ class TranslationDataset(Dataset):
         max_len: int = 128,
         alignment_file: str = None,
     ):
-        """
-        Args:
-            english_file: Path to English text file (one sentence per line).
-            chinese_file: Path to Chinese text file (one sentence per line).
-            tokenizer: Tokenizer instance with encode() method.
-            max_len: Maximum sequence length (longer sentences are skipped).
-            alignment_file: Optional path to Alignment.txt for filtering.
-        """
         self.tokenizer = tokenizer
         self.max_len = max_len
 
-        # Read parallel data
         with open(english_file, "r", encoding="utf-8") as f:
             self.en_sentences = [line.strip() for line in f if line.strip()]
         with open(chinese_file, "r", encoding="utf-8") as f:
             self.zh_sentences = [line.strip() for line in f if line.strip()]
 
-        # If alignment info exists, use it to filter valid pairs
         if alignment_file is not None and os.path.exists(alignment_file):
             self._apply_alignment(alignment_file)
 
-        # Ensure equal lengths
         min_len = min(len(self.en_sentences), len(self.zh_sentences))
         self.en_sentences = self.en_sentences[:min_len]
         self.zh_sentences = self.zh_sentences[:min_len]
@@ -52,13 +40,11 @@ class TranslationDataset(Dataset):
         print(f"TranslationDataset: {min_len} parallel sentence pairs")
 
     def _apply_alignment(self, alignment_file: str):
-        """Filter sentence pairs using alignment info."""
         valid_indices = set()
         with open(alignment_file, "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 2:
-                    # Alignment format: en_index zh_index [score?]
                     try:
                         en_idx = int(parts[0])
                         zh_idx = int(parts[1])
@@ -66,9 +52,7 @@ class TranslationDataset(Dataset):
                             valid_indices.add((en_idx, zh_idx))
                     except ValueError:
                         continue
-
         if valid_indices:
-            # If alignment is 1-to-1 mapping, use it to reorder/filter
             aligned_en = []
             aligned_zh = []
             for en_idx, zh_idx in sorted(valid_indices):
@@ -85,11 +69,9 @@ class TranslationDataset(Dataset):
         en_sent = self.en_sentences[idx]
         zh_sent = self.zh_sentences[idx]
 
-        # Encode sentences
         enc_ids = self.tokenizer.encode(en_sent, add_bos=True, add_eos=True)
         dec_ids = self.tokenizer.encode(zh_sent, add_bos=True, add_eos=True)
 
-        # Truncate if too long
         enc_ids = enc_ids[:self.max_len]
         dec_ids = dec_ids[:self.max_len]
 
@@ -100,20 +82,10 @@ class TranslationDataset(Dataset):
 
 
 def collate_fn(batch: List[dict], pad_id: int) -> dict:
-    """
-    Collate function for padding sequences in a batch.
-
-    Args:
-        batch: List of samples from TranslationDataset.
-        pad_id: Padding token ID.
-
-    Returns:
-        Dictionary with padded src, tgt, and masks.
-    """
+    """Collate function for padding sequences in a batch."""
     src_batch = [item["src"] for item in batch]
     tgt_batch = [item["tgt"] for item in batch]
 
-    # Pad sequences
     src_padded = torch.nn.utils.rnn.pad_sequence(
         src_batch, batch_first=True, padding_value=pad_id
     )
@@ -121,32 +93,25 @@ def collate_fn(batch: List[dict], pad_id: int) -> dict:
         tgt_batch, batch_first=True, padding_value=pad_id
     )
 
-    # Create masks (1 for real tokens, 0 for padding)
-    src_mask = (src_padded != pad_id).unsqueeze(1).unsqueeze(2)  # (B, 1, 1, S)
+    # src_padding_mask: (B, 1, 1, S) — True where PAD
+    src_padding_mask = (src_padded == pad_id).unsqueeze(1).unsqueeze(2)
 
-    # For decoder: causal mask + padding mask
-    tgt_len = tgt_padded.size(1)
-    # Causal mask: upper triangular
-    causal_mask = torch.triu(
-        torch.ones(tgt_len, tgt_len, dtype=torch.bool), diagonal=1
-    )
-    causal_mask = causal_mask.unsqueeze(0)  # (1, T, T)
+    # tgt_padding_mask: (B, 1, 1, T) — True where PAD
+    tgt_padding_mask = (tgt_padded == pad_id).unsqueeze(1).unsqueeze(2)
 
-    # Padding mask for target
-    tgt_pad_mask = (tgt_padded != pad_id).unsqueeze(1)  # (B, 1, T)
+    T = tgt_padded.size(1)
+    # causal_mask: (1, T, T) — upper triangular True
+    causal_mask = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
 
-    # Combined decoder mask: (B, 1, T, T) or handled inside model
-    tgt_mask = causal_mask | (~tgt_pad_mask.transpose(-1, -2).bool())
-
-    # Also create the "memory" mask for cross-attention (src padding)
-    memory_mask = (src_padded != pad_id).unsqueeze(1).unsqueeze(2)  # (B, 1, 1, S)
+    # Combine: (B, 1, T, T) — True where masked
+    # causal_mask (1, T, T) | tgt_padding_mask expanded to (B, 1, T, T)
+    tgt_mask = causal_mask.unsqueeze(0).unsqueeze(0) | tgt_padding_mask.transpose(-1, -2).expand(-1, -1, T, -1)
 
     return {
         "src": src_padded,
         "tgt": tgt_padded,
-        "src_mask": (src_padded == pad_id),  # True where padded
-        "tgt_mask": tgt_mask,  # True where masked
-        "memory_mask": (src_padded == pad_id),  # True where padded (for cross-attention)
+        "src_mask": src_padding_mask,
+        "tgt_mask": tgt_mask,
     }
 
 
@@ -157,19 +122,6 @@ def create_dataloader(
     num_workers: int = 4,
     pad_id: int = 0,
 ) -> DataLoader:
-    """
-    Create a DataLoader with proper collation.
-
-    Args:
-        dataset: TranslationDataset instance.
-        batch_size: Batch size (in number of sentences).
-        shuffle: Whether to shuffle the data.
-        num_workers: Number of dataloader workers.
-        pad_id: Padding token ID.
-
-    Returns:
-        PyTorch DataLoader.
-    """
     return DataLoader(
         dataset,
         batch_size=batch_size,
