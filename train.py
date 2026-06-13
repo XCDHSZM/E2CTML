@@ -4,6 +4,7 @@ Supports multi-GPU training (DataParallel), mixed precision, Noam scheduler.
 """
 
 import os
+import sys
 import time
 import math
 import torch
@@ -94,7 +95,7 @@ def train_epoch(
     total_loss = 0.0
     total_tokens = 0
 
-    pbar = tqdm(dataloader, desc="Training", unit="batch")
+    pbar = tqdm(dataloader, desc="Training", unit="batch", ncols=100, file=sys.stdout, leave=False)
     for batch in pbar:
         src = batch["src"].to(device)
         tgt = batch["tgt"].to(device)
@@ -171,7 +172,7 @@ def validate(
     references = []
     hypotheses = []
 
-    pbar = tqdm(dataloader, desc="Validating", unit="batch")
+    pbar = tqdm(dataloader, desc="Validating", unit="batch", ncols=100, file=sys.stdout, leave=False)
     with torch.no_grad():
         for batch in pbar:
             src = batch["src"].to(device)
@@ -311,7 +312,7 @@ def train(
     print(f"Batch={batch_size}, Epochs={epochs}, Warmup={warmup_steps}, Patience={patience}")
     print("=" * 60)
 
-    epochs_pbar = tqdm(range(start_epoch, epochs), desc="Epochs", unit="epoch", initial=start_epoch, total=epochs)
+    epochs_pbar = tqdm(range(start_epoch, epochs), desc="Epochs", unit="epoch", initial=start_epoch, total=epochs, ncols=100, file=sys.stdout)
     for epoch in epochs_pbar:
         epochs_pbar.set_description(f"Epoch {epoch+1}/{epochs}")
 
