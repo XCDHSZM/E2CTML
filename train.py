@@ -9,19 +9,17 @@ import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 from typing import Dict, Optional
 
+from tqdm import tqdm
 from models.transformer import Transformer
 from utils.data_loader import TranslationDataset, create_dataloader
 from evaluation import compute_bleu, translate_sentence
 
 
 class NoamScheduler:
-    """
-    Learning rate scheduler from "Attention Is All You Need".
-    lr = d_model^(-0.5) * min(step_num^(-0.5), step_num * warmup^(-1.5))
-    """
+    """Learning rate scheduler from 'Attention Is All You Need'."""
 
     def __init__(self, optimizer, d_model: int, warmup_steps: int = 4000):
         self.optimizer = optimizer
@@ -67,23 +65,14 @@ class LabelSmoothingLoss(nn.Module):
         self.confidence = 1.0 - smoothing
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            logits: (B, T, vocab_size)
-            target: (B, T)
-        """
         log_probs = nn.functional.log_softmax(logits, dim=-1)
-        # Create smoothed target distribution
         with torch.no_grad():
             true_dist = torch.zeros_like(log_probs)
             true_dist.fill_(self.smoothing / (self.vocab_size - 1))
             true_dist.scatter_(-1, target.unsqueeze(-1), self.confidence)
-            # Zero out padding positions
             mask = (target == self.padding_idx).unsqueeze(-1)
             true_dist.masked_fill_(mask, 0.0)
-
         loss = -(true_dist * log_probs).sum(dim=-1)
-        # Mask padding
         pad_mask = (target != self.padding_idx).float()
         loss = (loss * pad_mask).sum() / pad_mask.sum()
         return loss
@@ -99,32 +88,29 @@ def train_epoch(
     pad_id: int,
     use_amp: bool = True,
     clip_grad: float = 1.0,
-    log_interval: int = 100,
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     total_tokens = 0
-    start_time = time.time()
 
-    for batch_idx, batch in enumerate(dataloader):
+    pbar = tqdm(dataloader, desc="Training", unit="batch")
+    for batch in pbar:
         src = batch["src"].to(device)
         tgt = batch["tgt"].to(device)
         src_mask = batch["src_mask"].to(device)
         tgt_mask = batch["tgt_mask"].to(device)
 
-        # Prepare decoder input and output
         tgt_input = tgt[:, :-1]
         tgt_output = tgt[:, 1:]
 
-        # Adjust tgt_mask for truncated decoder input
         T = tgt_input.size(1)
         tgt_mask = tgt_mask[:, :, :T, :T]
 
         scheduler.zero_grad()
 
-        if use_amp:
-            with torch.amp.autocast("cuda" if device.type == "cuda" else "cpu"):
+        if use_amp and device.type == "cuda":
+            with torch.amp.autocast("cuda"):
                 logits = model(src, tgt_input, src_mask, tgt_mask, src_mask)
                 loss = criterion(
                     logits.contiguous().view(-1, logits.size(-1)),
@@ -147,26 +133,23 @@ def train_epoch(
 
         scheduler.step()
 
-        # Statistics
         n_tokens = (tgt_output != pad_id).sum().item()
         total_loss += loss.item() * n_tokens
         total_tokens += n_tokens
 
-        if batch_idx % log_interval == 0 and batch_idx > 0:
-            elapsed = time.time() - start_time
-            current_loss = total_loss / total_tokens
-            ppl = math.exp(min(current_loss, 10))
-            lr = scheduler.get_lr()
-            print(
-                f"  Step {batch_idx:6d}/{len(dataloader):6d} | "
-                f"Loss: {current_loss:.4f} | PPL: {ppl:.2f} | "
-                f"LR: {lr:.6f} | {elapsed:.1f}s"
-            )
+        # Update progress bar
+        current_loss = total_loss / total_tokens
+        ppl = math.exp(min(current_loss, 10))
+        lr = scheduler.get_lr()
+        pbar.set_postfix({
+            "loss": f"{current_loss:.3f}",
+            "ppl": f"{ppl:.1f}",
+            "lr": f"{lr:.2e}",
+        })
 
     avg_loss = total_loss / total_tokens
     ppl = math.exp(min(avg_loss, 10))
-    elapsed = time.time() - start_time
-    print(f"Epoch complete | Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | Time: {elapsed:.1f}s")
+    print(f"Epoch complete → Loss: {avg_loss:.4f} | PPL: {ppl:.2f}")
     return {"loss": avg_loss, "ppl": ppl}
 
 
@@ -185,12 +168,12 @@ def validate(
     model.eval()
     total_loss = 0.0
     total_tokens = 0
-
     references = []
     hypotheses = []
 
+    pbar = tqdm(dataloader, desc="Validating", unit="batch")
     with torch.no_grad():
-        for batch_idx, batch in enumerate(dataloader):
+        for batch in pbar:
             src = batch["src"].to(device)
             tgt = batch["tgt"].to(device)
             src_mask = batch["src_mask"].to(device)
@@ -201,7 +184,6 @@ def validate(
             T = tgt_input.size(1)
             tgt_mask_adj = tgt_mask[:, :, :T, :T]
 
-            # Compute loss
             logits = model(src, tgt_input, src_mask, tgt_mask_adj, src_mask)
             loss = criterion(
                 logits.contiguous().view(-1, logits.size(-1)),
@@ -211,19 +193,17 @@ def validate(
             total_loss += loss.item() * n_tokens
             total_tokens += n_tokens
 
-            # Generate translations for a subset
+            pbar.set_postfix({"loss": f"{total_loss/max(total_tokens,1):.3f}"})
+
             if len(references) < max_samples:
                 for i in range(src.size(0)):
                     if len(references) >= max_samples:
                         break
-                    # Reference
                     ref_ids = tgt[i][tgt[i] != pad_id].tolist()
-                    # Remove BOS/EOS for BLEU
                     ref_ids = [t for t in ref_ids if t not in {bos_id, eos_id}]
                     ref_text = tokenizer.decode(ref_ids)
                     references.append(ref_text)
 
-                    # Hypothesis via greedy decode
                     hyp_ids = model.greedy_decode(
                         src[i:i+1], src_mask[i:i+1], model.max_len, bos_id, eos_id
                     )
@@ -234,13 +214,9 @@ def validate(
 
     avg_loss = total_loss / total_tokens if total_tokens > 0 else float("inf")
     ppl = math.exp(min(avg_loss, 10))
+    bleu = compute_bleu(references, hypotheses) if (references and hypotheses) else 0.0
 
-    # Compute BLEU if we have references
-    bleu = 0.0
-    if references and hypotheses:
-        bleu = compute_bleu(references, hypotheses)
-
-    print(f"Validation | Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | BLEU: {bleu:.2f}")
+    print(f"Validation → Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | BLEU: {bleu:.2f}")
     return {"loss": avg_loss, "ppl": ppl, "bleu": bleu}
 
 
@@ -248,21 +224,13 @@ def train(
     config: dict,
     state_dict_path: Optional[str] = None,
 ):
-    """
-    Main training loop.
-
-    Args:
-        config: Training configuration dictionary.
-        state_dict_path: Optional path to resume from checkpoint.
-    """
-    # Unpack config
+    """Main training loop."""
     train_en = config["train_en"]
     train_zh = config["train_zh"]
     dev_en = config["dev_en"]
     dev_zh = config["dev_zh"]
     alignment_file = config.get("alignment_file", None)
     tokenizer_model = config["tokenizer_model"]
-    vocab_size = config.get("vocab_size", 16000)
     d_model = config.get("d_model", 512)
     n_layers = config.get("n_layers", 6)
     n_heads = config.get("n_heads", 8)
@@ -276,18 +244,15 @@ def train(
     clip_grad = config.get("clip_grad", 1.0)
     use_amp = config.get("use_amp", True)
     num_workers = config.get("num_workers", 4)
-    log_interval = config.get("log_interval", 100)
     save_dir = config.get("save_dir", "checkpoints")
     patience = config.get("patience", 10)
 
     os.makedirs(save_dir, exist_ok=True)
 
-    # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_gpus = torch.cuda.device_count()
-    print(f"Using device: {device} | GPUs available: {n_gpus}")
+    print(f"Using device: {device} | GPUs: {n_gpus}")
 
-    # Load tokenizer
     from utils.tokenizer import Tokenizer
     tokenizer = Tokenizer(tokenizer_model)
     pad_id = tokenizer.pad_id()
@@ -296,15 +261,11 @@ def train(
     vocab_size = len(tokenizer)
     print(f"Tokenizer loaded. Vocab size: {vocab_size}")
 
-    # Create datasets
     train_dataset = TranslationDataset(
         train_en, train_zh, tokenizer, max_len, alignment_file
     )
-    dev_dataset = TranslationDataset(
-        dev_en, dev_zh, tokenizer, max_len
-    )
+    dev_dataset = TranslationDataset(dev_en, dev_zh, tokenizer, max_len)
 
-    # Create dataloaders
     train_loader = create_dataloader(
         train_dataset, batch_size, shuffle=True, num_workers=num_workers, pad_id=pad_id
     )
@@ -313,42 +274,26 @@ def train(
     )
     print(f"Train batches: {len(train_loader)} | Dev batches: {len(dev_loader)}")
 
-    # Create model
     model = Transformer(
-        vocab_size=vocab_size,
-        d_model=d_model,
-        n_layers=n_layers,
-        n_heads=n_heads,
-        d_ff=d_ff,
-        dropout=dropout,
-        max_len=max_len,
+        vocab_size=vocab_size, d_model=d_model, n_layers=n_layers,
+        n_heads=n_heads, d_ff=d_ff, dropout=dropout, max_len=max_len,
     )
-
-    # Multi-GPU support
     if n_gpus > 1:
         model = nn.DataParallel(model)
     model = model.to(device)
 
-    # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model parameters: {n_params:,}")
 
-    # Optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.98), eps=1e-9)
     scheduler = NoamScheduler(optimizer, d_model, warmup_steps)
-
-    # Loss
     criterion = LabelSmoothingLoss(vocab_size, pad_id, label_smoothing)
+    scaler = GradScaler() if (use_amp and device.type == "cuda") else None
 
-    # Mixed precision
-    scaler = GradScaler() if use_amp else None
-
-    # Training state
     start_epoch = 0
     best_bleu = 0.0
     epochs_no_improve = 0
 
-    # Resume from checkpoint
     if state_dict_path:
         print(f"Resuming from {state_dict_path}")
         checkpoint = torch.load(state_dict_path, map_location=device)
@@ -362,64 +307,52 @@ def train(
         print(f"Resumed at epoch {start_epoch}, best BLEU: {best_bleu:.2f}")
 
     print("=" * 60)
-    print("Starting training...")
-    print(f"Config: d_model={d_model}, layers={n_layers}, heads={n_heads}, d_ff={d_ff}")
-    print(f"Batch size={batch_size}, Epochs={epochs}, Warmup={warmup_steps}")
+    print(f"Training — d_model={d_model}, layers={n_layers}, heads={n_heads}, d_ff={d_ff}")
+    print(f"Batch={batch_size}, Epochs={epochs}, Warmup={warmup_steps}, Patience={patience}")
     print("=" * 60)
 
-    for epoch in range(start_epoch, epochs):
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch + 1}/{epochs}")
-        print(f"{'='*60}")
+    epochs_pbar = tqdm(range(start_epoch, epochs), desc="Epochs", unit="epoch", initial=start_epoch, total=epochs)
+    for epoch in epochs_pbar:
+        epochs_pbar.set_description(f"Epoch {epoch+1}/{epochs}")
 
-        # Train
         train_metrics = train_epoch(
             model, train_loader, criterion, scheduler, scaler,
-            device, pad_id, use_amp, clip_grad, log_interval
+            device, pad_id, use_amp, clip_grad,
         )
 
-        # Validate
         dev_metrics = validate(
             model, dev_loader, criterion, tokenizer,
             device, pad_id, bos_id, eos_id
         )
 
-        # Checkpoint
         current_bleu = dev_metrics["bleu"]
         is_best = current_bleu > best_bleu
+
         if is_best:
             best_bleu = current_bleu
             epochs_no_improve = 0
-
-            # Save best model
             model_state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
             checkpoint = {
-                "epoch": epoch,
-                "model_state": model_state,
+                "epoch": epoch, "model_state": model_state,
                 "scheduler_state": scheduler.state_dict(),
-                "best_bleu": best_bleu,
-                "train_metrics": train_metrics,
-                "dev_metrics": dev_metrics,
-                "config": config,
+                "best_bleu": best_bleu, "config": config,
             }
-            ckpt_path = os.path.join(save_dir, "best_model.pt")
-            torch.save(checkpoint, ckpt_path)
-            print(f"  ✓ Best model saved (BLEU: {best_bleu:.2f}) → {ckpt_path}")
+            torch.save(checkpoint, os.path.join(save_dir, "best_model.pt"))
         else:
             epochs_no_improve += 1
-            print(f"  BLEU: {current_bleu:.2f} (best: {best_bleu:.2f}, no improve: {epochs_no_improve})")
 
-        # Save latest checkpoint
         model_state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
-        checkpoint = {
-            "epoch": epoch,
-            "model_state": model_state,
-            "scheduler_state": scheduler.state_dict(),
-            "best_bleu": best_bleu,
-        }
-        torch.save(checkpoint, os.path.join(save_dir, "latest_checkpoint.pt"))
+        torch.save({
+            "epoch": epoch, "model_state": model_state,
+            "scheduler_state": scheduler.state_dict(), "best_bleu": best_bleu,
+        }, os.path.join(save_dir, "latest_checkpoint.pt"))
 
-        # Early stopping
+        epochs_pbar.set_postfix({
+            "train_loss": f"{train_metrics['loss']:.3f}",
+            "dev_bleu": f"{dev_metrics['bleu']:.2f}",
+            "best_bleu": f"{best_bleu:.2f}",
+        })
+
         if epochs_no_improve >= patience:
             print(f"\nEarly stopping after {patience} epochs without improvement.")
             break
