@@ -31,11 +31,10 @@ def compute_bleu(references: List[str], hypotheses: List[str]) -> float:
 
 
 def compute_sentence_bleu(reference: str, hypothesis: str) -> float:
-    """Compute BLEU for a single sentence pair."""
-    bleu = BLEU()
+    # 开启平滑策略，消除警告并获得更准确的单句得分
+    bleu = BLEU(effective_order=True)
     result = bleu.sentence_score(hypothesis, [reference])
     return result.score
-
 
 def translate_sentence(
     model,
